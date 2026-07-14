@@ -3,17 +3,29 @@ import os
 import pygame
 import game
 
+# tell Windows not to blurry-upscale the window on high-DPI displays,
+# so text renders at the screen's real resolution
+if os.name == "nt":
+    try:
+        import ctypes
+        ctypes.windll.shcore.SetProcessDpiAwareness(1)
+    except (ImportError, AttributeError, OSError):
+        try:
+            ctypes.windll.user32.SetProcessDPIAware()
+        except (AttributeError, OSError):
+            pass
+
 pygame.init()
 screen = pygame.display.set_mode((game.SCREEN_W, game.SCREEN_H))
-pygame.display.set_caption("Street Fighter")
+pygame.display.set_caption("Python Cubed")
 clock = pygame.time.Clock()
 
 CENTER_X = game.SCREEN_W // 2
 
-title_font = pygame.font.Font(None, 90)
-button_font = pygame.font.Font(None, 50)
-small_font = pygame.font.Font(None, 36)
-controls_font = pygame.font.Font(None, 32)
+title_font = game.make_font(68, bold=True)
+button_font = game.make_font(36)
+small_font = game.make_font(27)
+controls_font = game.make_font(24)
 
 # desert-arch background for the menu screens (falls back to a flat color)
 _bg_path = os.path.join(os.path.dirname(os.path.abspath(__file__)), "assets", "menu_bg.png")
@@ -37,9 +49,9 @@ def draw_background(darken=90):
         screen.fill((84, 54, 38))  # sandstone fallback if the image is missing
 
 
-def draw_button(surface, text, rect, mouse_pos):
+def draw_button(surface, text, rect, mouse_pos, enabled=True):
     """Sandstone-block buttons to match the desert arch background."""
-    game.draw_stone_button(surface, text, rect, mouse_pos, button_font)
+    game.draw_stone_button(surface, text, rect, mouse_pos, button_font, enabled)
 
 
 def menu_screen():
@@ -67,7 +79,7 @@ def menu_screen():
                     return "exit_confirm"
 
         draw_background(darken=60)
-        title = title_font.render("STREET FIGHTER", True, (230, 200, 50))
+        title = title_font.render("PYTHON CUBED", True, (230, 200, 50))
         screen.blit(title, title.get_rect(center=(CENTER_X, 130)))
 
         draw_button(screen, "Single Player", single_btn, mouse_pos)
@@ -111,12 +123,15 @@ def exit_confirm_screen():
         clock.tick(60)
 
 
-def difficulty_screen():
-    """Pick the CPU level for single player."""
-    easy_btn = pygame.Rect(CENTER_X - 150, 250, 300, 60)
-    medium_btn = pygame.Rect(CENTER_X - 150, 340, 300, 60)
-    hard_btn = pygame.Rect(CENTER_X - 150, 430, 300, 60)
-    back_btn = pygame.Rect(CENTER_X - 100, 550, 200, 60)
+def level_select_screen():
+    """Pick a level: beat one to unlock the next. Progress is saved to disk."""
+    progress = game.load_progress()
+    buttons = []
+    for i in range(game.MAX_LEVEL):
+        col, row = i % 2, i // 2
+        rect = pygame.Rect(CENTER_X - 320 + col * 340, 250 + row * 90, 300, 60)
+        buttons.append((i + 1, rect))
+    back_btn = pygame.Rect(CENTER_X - 100, 560, 200, 60)
 
     while True:
         mouse_pos = pygame.mouse.get_pos()
@@ -124,12 +139,9 @@ def difficulty_screen():
             if event.type == pygame.QUIT:
                 return "quit"
             if event.type == pygame.MOUSEBUTTONDOWN and event.button == 1:
-                if easy_btn.collidepoint(mouse_pos):
-                    return "easy"
-                if medium_btn.collidepoint(mouse_pos):
-                    return "medium"
-                if hard_btn.collidepoint(mouse_pos):
-                    return "hard"
+                for level, rect in buttons:
+                    if rect.collidepoint(mouse_pos) and level <= progress['unlocked']:
+                        return f"level_{level}"
                 if back_btn.collidepoint(mouse_pos):
                     return "menu"
             if event.type == pygame.KEYDOWN and event.key == pygame.K_ESCAPE:
@@ -137,15 +149,21 @@ def difficulty_screen():
 
         draw_background(darken=110)
         title = title_font.render("SINGLE PLAYER", True, (230, 200, 50))
-        screen.blit(title, title.get_rect(center=(CENTER_X, 120)))
-        sub = small_font.render("Choose your opponent", True, (255, 238, 205))
-        screen.blit(sub, sub.get_rect(center=(CENTER_X, 190)))
+        screen.blit(title, title.get_rect(center=(CENTER_X, 110)))
+        sub = small_font.render("Beat a level to unlock the next - progress saves automatically",
+                                True, (255, 238, 205))
+        screen.blit(sub, sub.get_rect(center=(CENTER_X, 180)))
 
-        draw_button(screen, "Easy", easy_btn, mouse_pos)
-        draw_button(screen, "Medium", medium_btn, mouse_pos)
-        draw_button(screen, "Hard", hard_btn, mouse_pos)
+        for level, rect in buttons:
+            unlocked = level <= progress['unlocked']
+            draw_button(screen, f"Level {level}" if unlocked else "Locked",
+                        rect, mouse_pos, enabled=unlocked)
+            if level <= progress['beaten']:
+                # gold medal on cleared levels
+                pygame.draw.circle(screen, (230, 200, 50), (rect.right - 26, rect.centery), 10)
+                pygame.draw.circle(screen, (62, 40, 28), (rect.right - 26, rect.centery), 10, 2)
+
         draw_button(screen, "Back", back_btn, mouse_pos)
-
         pygame.display.update()
         clock.tick(60)
 
@@ -163,9 +181,9 @@ def controls_screen():
         ("Dodge", "L Shift", "R Shift"),
     ]
     tips = [
+        "Attacks wind up first - watch the outline, then block or dodge",
         "Block cuts damage to 1/5  -  dodge has invincibility frames",
-        "Crouch ducks under punches and high fireballs",
-        "Land hits to fill your meter - a full bar unlocks the special",
+        "Crouch ducks jabs and high fireballs - a full meter fires the special",
     ]
 
     while True:
@@ -251,9 +269,9 @@ while state != "quit":
     elif state == "exit_confirm":
         state = exit_confirm_screen()  # -> "quit" or back to "menu"
     elif state == "single":
-        state = difficulty_screen()  # -> "easy" / "medium" / "hard" / "menu"
-    elif state in ("easy", "medium", "hard"):
-        state = game.run_game(screen, mode="single", difficulty=state)
+        state = level_select_screen()  # -> "level_N" or back to "menu"
+    elif state.startswith("level_"):
+        state = game.run_game(screen, mode="single", level=int(state.split("_")[1]))
     elif state == "multi":
         state = game.run_game(screen, mode="multi")
 
