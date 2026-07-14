@@ -202,8 +202,8 @@ def controls_screen():
         screen.blit(title, title.get_rect(center=(CENTER_X, 90)))
 
         # column headers, tinted to match each fighter
-        p1_head = small_font.render("PLAYER 1", True, (100, 160, 255))
-        p2_head = small_font.render("PLAYER 2", True, (255, 100, 100))
+        p1_head = small_font.render("PLAYER 1", True, game.P1_ACCENT)
+        p2_head = small_font.render("PLAYER 2", True, game.P2_ACCENT)
         screen.blit(p1_head, p1_head.get_rect(center=(CENTER_X - 220, 165)))
         screen.blit(p2_head, p2_head.get_rect(center=(CENTER_X + 220, 165)))
 
