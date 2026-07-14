@@ -33,7 +33,17 @@ HEAVY_COOLDOWN = 60
 HEAVY_DAMAGE = 22    # ...but big reward, and it reaches low enough to catch crouchers
 SPECIAL_WINDUP = 12  # charge-up before the energy ball actually appears
 SPECIAL_DAMAGE = 25  # the projectile
-BLOCK_DIVISOR = 5    # blocked hits deal 1/5 damage ("chip" damage)
+
+# --- blocking / guard gauge ---
+# a good block stops ALL damage, but it spends the guard gauge: each blocked
+# hit eats a big chunk and even holding block wears it down. Run it dry and
+# the guard BREAKS - no blocking until the gauge climbs back up.
+BLOCK_WINDUP = 3        # frames after pressing block before it actually protects
+GUARD_MAX = 100
+GUARD_HIT_COST = 35     # each blocked hit eats about a third of the gauge
+GUARD_HOLD_DRAIN = 0.4  # holding block drains it (~4 seconds from full to empty)
+GUARD_REGEN = 0.3       # recovery per frame while not blocking
+GUARD_RECOVER = 35      # a broken guard works again once it climbs back to this
 
 # --- dodge numbers ---
 DODGE_FRAMES = 14    # you are invincible for this many frames
@@ -171,6 +181,9 @@ class Player(pygame.sprite.Sprite):
         self.has_hit = False     # whether this attack already landed
         self.crouching = False
         self.blocking = False
+        self.block_held_frames = 0     # how long block has been held (wind-up timer)
+        self.guard = float(GUARD_MAX)  # guard gauge: blocking spends it
+        self.guard_broken = False      # emptied gauge: no blocking until it recovers
         self.dodging = 0         # frames remaining in the current dodge (invincible)
         self.dodge_cooldown = 0
         self.dodge_dir = 1
@@ -205,6 +218,9 @@ class Player(pygame.sprite.Sprite):
         self.has_hit = False
         self.crouching = False
         self.blocking = False
+        self.block_held_frames = 0
+        self.guard = float(GUARD_MAX)
+        self.guard_broken = False
         self.dodging = 0
         self.dodge_cooldown = 0
         self.meter = 0
@@ -225,6 +241,13 @@ class Player(pygame.sprite.Sprite):
     def get_human_inputs(self):
         keys = pygame.key.get_pressed()
         return {name: keys[key] for name, key in self.controls.items()}
+
+    def ai_block_choice(self):
+        """Guard if the gauge can take a hit, otherwise duck instead of breaking."""
+        if self.guard_broken or self.guard < GUARD_HIT_COST:
+            self.ai_wants_crouch = True
+        else:
+            self.ai_wants_block = True
 
     def get_ai_inputs(self):
         p = self.ai_params
@@ -267,7 +290,7 @@ class Player(pygame.sprite.Sprite):
                 elif self.dodge_cooldown == 0 and random.random() < 0.5:
                     self.ai_wants_dodge = True
                 else:
-                    self.ai_wants_block = True
+                    self.ai_block_choice()
             elif ((self.target.windup > 0 or self.target.attacking > 0
                     or self.target.special_windup > 0)
                     and gap < 320 and random.random() < p['defend']):
@@ -278,7 +301,7 @@ class Player(pygame.sprite.Sprite):
                 elif self.dodge_cooldown == 0 and random.random() < 0.4:
                     self.ai_wants_dodge = True    # roll through with i-frames
                 else:
-                    self.ai_wants_block = True    # eat chip instead of the full hit
+                    self.ai_block_choice()        # raise the guard (if it can take it)
             elif not self.target.on_ground and gap < 260 and random.random() < p['attack']:
                 self.ai_wants_heavy = True        # anti-air: swat jumpers with the big one
             elif (self.target.attack_cooldown > 12 and gap <= punch_range
@@ -308,7 +331,7 @@ class Player(pygame.sprite.Sprite):
                     else:
                         self.ai_wants_punch = True
                 elif roll < p['attack'] + 0.15:
-                    self.ai_wants_block = True
+                    self.ai_block_choice()
                 else:
                     self.ai_move = -toward        # retreat
             # occasional random hop to stay unpredictable
@@ -376,11 +399,19 @@ class Player(pygame.sprite.Sprite):
             self.rect.x += self.dodge_dir * DODGE_SPEED
             self.crouching = False
             self.blocking = False
+            self.block_held_frames = 0
         else:
             # once a wind-up starts you are committed: no blocking out of it
             busy = self.attacking > 0 or self.windup > 0 or self.special_windup > 0
             self.crouching = inputs['crouch'] and self.on_ground
-            self.blocking = inputs['block'] and self.on_ground and not busy
+
+            # block has its own tiny wind-up, and a broken guard can't block at all
+            want_block = inputs['block'] and self.on_ground and not busy
+            if want_block and not self.guard_broken:
+                self.block_held_frames += 1
+            else:
+                self.block_held_frames = 0
+            self.blocking = self.block_held_frames > BLOCK_WINDUP
 
             # walking and jumping only while standing free (not crouched/blocking)
             if not self.crouching and not self.blocking:
@@ -417,6 +448,16 @@ class Player(pygame.sprite.Sprite):
                     self.special_windup = SPECIAL_WINDUP  # ball spawns when the charge ends
                     self.stats['special'] += 1
 
+        # guard gauge: wears down while blocking, recovers while it rests
+        if self.blocking:
+            self.guard = max(0.0, self.guard - GUARD_HOLD_DRAIN)
+            if self.guard <= 0:
+                self.guard_broken = True  # shattered: wide open until it recovers
+        else:
+            self.guard = min(float(GUARD_MAX), self.guard + GUARD_REGEN)
+            if self.guard_broken and self.guard >= GUARD_RECOVER:
+                self.guard_broken = False
+
         self.vel_y += 0.8
         self.rect.y += self.vel_y
 
@@ -442,7 +483,11 @@ class Player(pygame.sprite.Sprite):
     def update_image(self):
         """Rebuild the body surface so crouch / block / dodge are visible."""
         self.image = pygame.Surface(self.rect.size)
-        self.image.fill(self.color)
+        if self.blocking or self.block_held_frames > 0:
+            # noticeably darker while guarding: the clear "I'm blocking" tell
+            self.image.fill(tuple(int(c * 0.55) for c in self.color))
+        else:
+            self.image.fill(self.color)
         if self.blocking:
             # white shield strip on the side facing the opponent
             x = self.rect.width - 12 if self.facing == 1 else 0
@@ -484,10 +529,11 @@ def apply_hit(attacker, defender, damage):
         return False  # invincibility frames: the attack whiffs right through
 
     if defender.blocking:
-        chip = max(1, damage // BLOCK_DIVISOR)
-        attacker.stats['damage'] += min(chip, defender.health)
+        # a solid block stops ALL damage, but the hit chunks the guard gauge
         defender.stats['blocked'] += 1
-        defender.health = max(0, defender.health - chip)
+        defender.guard = max(0.0, defender.guard - GUARD_HIT_COST)
+        if defender.guard <= 0:
+            defender.guard_broken = True  # guard shattered: wide open now
         defender.meter = min(METER_MAX, defender.meter + METER_ON_BLOCK)
         attacker.meter = min(METER_MAX, attacker.meter + METER_ON_BLOCK)
         # shove the blocker back a step
@@ -526,12 +572,17 @@ def resolve_player_collision(p1, p2):
             p.rect.right = SCREEN_W
 
 
-def draw_skill_bar(surface, skill_font, x, y, w, h, label, ratio, from_right):
+def draw_skill_bar(surface, skill_font, x, y, w, h, label, ratio, from_right, broken=False):
     """One cooldown pill: fills back up as the skill recovers, green when ready."""
-    ready = ratio >= 1
+    ready = ratio >= 1 and not broken
     pygame.draw.rect(surface, (35, 35, 50), (x, y, w, h))
     fill = int(w * min(ratio, 1))
-    color = (90, 200, 110) if ready else (105, 105, 130)
+    if broken:
+        color = (200, 70, 60)   # shattered guard: red until it recovers
+    elif ready:
+        color = (90, 200, 110)
+    else:
+        color = (105, 105, 130)
     fill_x = x + w - fill if from_right else x
     pygame.draw.rect(surface, color, (fill_x, y, fill, h))
     pygame.draw.rect(surface, (255, 255, 255), (x, y, w, h), 1)
@@ -573,21 +624,22 @@ def draw_hud(surface, p1, p2, score, font, skill_font):
         pygame.draw.rect(surface, color, (fill_x, METER_Y, fill, METER_HEIGHT))
         pygame.draw.rect(surface, (255, 255, 255), (x, METER_Y, BAR_WIDTH, METER_HEIGHT), 1)
 
-    # Cooldown bars: attack + dodge readiness (mirrored so ATTACK sits outermost)
+    # Skill bars: attack / dodge readiness + guard gauge (mirrored for P2)
     COOL_Y = METER_Y + METER_HEIGHT + 6
     COOL_H = 18
-    COOL_W = 145  # two bars + 10px gap == BAR_WIDTH, lining up with the bars above
+    COOL_W = 93  # three bars + two 10px gaps == BAR_WIDTH, lining up with the bars above
     for x0, player, from_right in ((MARGIN, p1, False), (p2_x, p2, True)):
         atk = 1.0 if player.attack_cooldown == 0 else \
             1 - player.attack_cooldown / player.attack_cooldown_max
         dodge = 1.0 if player.dodge_cooldown == 0 else \
             1 - player.dodge_cooldown / DODGE_COOLDOWN
-        bars = [("ATTACK", atk), ("DODGE", dodge)]
+        bars = [("ATTACK", atk, False), ("DODGE", dodge, False),
+                ("BLOCK", player.guard / GUARD_MAX, player.guard_broken)]
         if from_right:
             bars.reverse()
-        for i, (label, ratio) in enumerate(bars):
+        for i, (label, ratio, broken) in enumerate(bars):
             draw_skill_bar(surface, skill_font, x0 + i * (COOL_W + 10), COOL_Y,
-                           COOL_W, COOL_H, label, ratio, from_right)
+                           COOL_W, COOL_H, label, ratio, from_right, broken)
 
     # Score in the middle
     score_text = font.render(f"{score[0]} - {score[1]}", True, (255, 255, 255))
