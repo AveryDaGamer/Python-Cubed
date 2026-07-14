@@ -2,10 +2,7 @@ import tkinter as tk
 from tkinter import ttk
 import pandas as pd
 
-
 df = pd.read_csv("Cleaned_worldwide_video_games.csv")
-
-
 
 numeric_columns = [
     "Revenue_M_USD",
@@ -25,10 +22,8 @@ root.title("Worldwide Video Game Dashboard")
 root.geometry("1000x600")
 root.configure(bg="#f2f2f2")
 
-
 kpi_frame = tk.Frame(root, bg="#f2f2f2")
 kpi_frame.pack(pady=20)
-
 
 card = tk.Frame(
     kpi_frame,
@@ -41,7 +36,6 @@ card = tk.Frame(
 
 card.grid(row=0, column=0, padx=15)
 card.grid_propagate(False)
-
 
 
 total_games = len(df)
@@ -85,7 +79,6 @@ def create_card(parent, title, value, row, column):
         fg="blue"
     ).pack()
 
-
 total_games = len(df)
 total_revenue = df["Revenue_M_USD"].sum()
 average_rating = df["Avg_User_Rating"].mean()
@@ -103,4 +96,3 @@ create_card(kpi_frame, "Avg Price", f"${average_price:.2f}", 1, 1)
 create_card(kpi_frame, "Monthly Users", f"{average_users:,.0f}", 1, 2)
 
 root.mainloop()
-
