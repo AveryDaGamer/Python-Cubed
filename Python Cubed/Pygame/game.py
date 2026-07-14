@@ -32,7 +32,7 @@ HEAVY_ACTIVE = 12
 HEAVY_COOLDOWN = 60
 HEAVY_DAMAGE = 22    # ...but big reward, and it reaches low enough to catch crouchers
 SPECIAL_WINDUP = 12  # charge-up before the energy ball actually appears
-SPECIAL_DAMAGE = 25  # the projectile
+SPECIAL_DAMAGE = 45  # the projectile: a full meter should hit like a truck
 
 # --- blocking / guard gauge ---
 # a good block stops ALL damage, but it spends the guard gauge: each blocked
@@ -534,8 +534,8 @@ def apply_hit(attacker, defender, damage):
         defender.guard = max(0.0, defender.guard - GUARD_HIT_COST)
         if defender.guard <= 0:
             defender.guard_broken = True  # guard shattered: wide open now
+        # only the blocker builds meter: swinging into a wall charges nothing
         defender.meter = min(METER_MAX, defender.meter + METER_ON_BLOCK)
-        attacker.meter = min(METER_MAX, attacker.meter + METER_ON_BLOCK)
         # shove the blocker back a step
         push = 14 if defender.rect.centerx >= attacker.rect.centerx else -14
         defender.rect.x += push
