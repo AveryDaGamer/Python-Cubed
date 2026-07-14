@@ -182,7 +182,7 @@ def controls_screen():
     ]
     tips = [
         "Attacks wind up first - watch the outline, then block or dodge",
-        "Block cuts damage to 1/5  -  dodge has invincibility frames",
+        "Block stops ALL damage but drains your guard - break it and you're open",
         "Crouch ducks jabs and high fireballs - a full meter fires the special",
     ]
 
