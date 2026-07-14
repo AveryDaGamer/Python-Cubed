@@ -20,6 +20,12 @@ BODY_WIDTH = 170
 STAND_HEIGHT = 270
 CROUCH_HEIGHT = 140  # short enough that a standing punch whiffs over your head
 
+# fighter identity colors (fallback bodies + UI label tints, matching the snakes)
+P1_COLOR = (70, 150, 85)     # green python
+P2_COLOR = (175, 125, 70)    # brown python
+P1_ACCENT = (120, 210, 140)
+P2_ACCENT = (225, 175, 110)
+
 # --- attack numbers ---
 # every attack "winds up" first: its outline appears but can't hit yet,
 # giving the defender a window to block, crouch, or dodge
@@ -122,6 +128,14 @@ def record_level_beaten(level):
     return progress
 
 
+def load_sprite(path, face_left_source=False):
+    """Load a fighter sprite with transparency, oriented to face RIGHT."""
+    img = pygame.image.load(path).convert_alpha()
+    if face_left_source:
+        img = pygame.transform.flip(img, True, False)
+    return img
+
+
 class Projectile(pygame.sprite.Sprite):
     """The special attack: an energy ball that flies across the screen."""
     SPEED = 9
@@ -143,7 +157,7 @@ class Projectile(pygame.sprite.Sprite):
 
 
 class Player(pygame.sprite.Sprite):
-    def __init__(self, x, color, controls):
+    def __init__(self, x, color, controls, sprite=None):
         super().__init__()
         self.is_ai = False
         self.target = None          # the opponent, set for AI players
@@ -159,6 +173,12 @@ class Player(pygame.sprite.Sprite):
         self.ai_wants_dodge = False
         self.ai_wants_jump = False
         self.color = color
+        if sprite is not None:
+            # pre-squashed frames: rearing up tall vs coiled low for crouching
+            self.stand_sprite = pygame.transform.smoothscale(sprite, (BODY_WIDTH, STAND_HEIGHT))
+            self.crouch_sprite = pygame.transform.smoothscale(sprite, (BODY_WIDTH, CROUCH_HEIGHT))
+        else:
+            self.stand_sprite = self.crouch_sprite = None  # plain colored block
         self.image = pygame.Surface((BODY_WIDTH, STAND_HEIGHT))
         self.image.fill(color)
         self.rect = self.image.get_rect()
@@ -193,6 +213,7 @@ class Player(pygame.sprite.Sprite):
         self.prev_dodge = False
         self.prev_special = False
         self.evade_counted = True  # so a dodged swing only counts once in the stats
+        self.update_image()  # show the sprite from frame one (countdown included)
         # match-long stats for the victory screen (NOT reset between rounds)
         self.stats = {
             'light': 0,    # light attacks thrown
@@ -481,13 +502,19 @@ class Player(pygame.sprite.Sprite):
         self.update_image()
 
     def update_image(self):
-        """Rebuild the body surface so crouch / block / dodge are visible."""
-        self.image = pygame.Surface(self.rect.size)
-        if self.blocking or self.block_held_frames > 0:
-            # noticeably darker while guarding: the clear "I'm blocking" tell
-            self.image.fill(tuple(int(c * 0.55) for c in self.color))
+        """Rebuild the body so facing / crouch / block / dodge are all visible."""
+        guarding = self.blocking or self.block_held_frames > 0
+        if self.stand_sprite is not None:
+            frame = self.crouch_sprite if self.crouching else self.stand_sprite
+            if self.facing == -1:
+                frame = pygame.transform.flip(frame, True, False)
+            self.image = frame.copy()
+            if guarding:
+                # noticeably darker while guarding: the clear "I'm blocking" tell
+                self.image.fill((140, 140, 140, 255), special_flags=pygame.BLEND_RGBA_MULT)
         else:
-            self.image.fill(self.color)
+            self.image = pygame.Surface(self.rect.size)
+            self.image.fill(tuple(int(c * 0.55) for c in self.color) if guarding else self.color)
         if self.blocking:
             # white shield strip on the side facing the opponent
             x = self.rect.width - 12 if self.facing == 1 else 0
@@ -719,8 +746,8 @@ def draw_victory_screen(surface, big_font, font, stat_font,
         surface.blit(extra, extra.get_rect(center=(SCREEN_W // 2, 218)))
 
     # column headers, tinted to match each fighter
-    head1 = font.render(p1_name, True, (100, 160, 255))
-    head2 = font.render(p2_name, True, (255, 100, 100))
+    head1 = font.render(p1_name, True, P1_ACCENT)
+    head2 = font.render(p2_name, True, P2_ACCENT)
     surface.blit(head1, head1.get_rect(center=(SCREEN_W // 2 - 260, 255)))
     surface.blit(head2, head2.get_rect(center=(SCREEN_W // 2 + 260, 255)))
 
@@ -771,8 +798,17 @@ def run_game(screen, mode="multi", level=1):
         'block': pygame.K_SEMICOLON, 'dodge': pygame.K_RSHIFT,
     }
 
-    player1 = Player(P1_START_X, (0, 100, 255), p1_controls)
-    player2 = Player(P2_START_X, (255, 60, 60), p2_controls)
+    # snake fighters (fall back to plain colored blocks if the art is missing)
+    assets_dir = os.path.join(os.path.dirname(os.path.abspath(__file__)), "assets")
+    try:
+        p1_sprite = load_sprite(os.path.join(assets_dir, "snake_green.png"),
+                                face_left_source=True)  # green art faces left
+        p2_sprite = load_sprite(os.path.join(assets_dir, "snake_brown.png"))
+    except (pygame.error, FileNotFoundError):
+        p1_sprite = p2_sprite = None
+
+    player1 = Player(P1_START_X, P1_COLOR, p1_controls, sprite=p1_sprite)
+    player2 = Player(P2_START_X, P2_COLOR, p2_controls, sprite=p2_sprite)
 
     projectiles = pygame.sprite.Group()
     player1.projectile_group = projectiles
