@@ -55,11 +55,13 @@ def draw_button(surface, text, rect, mouse_pos, enabled=True):
 
 
 def menu_screen():
-    single_btn = pygame.Rect(CENTER_X - 150, 230, 300, 60)
-    multi_btn = pygame.Rect(CENTER_X - 150, 320, 300, 60)
-    controls_btn = pygame.Rect(CENTER_X - 150, 410, 300, 60)
-    credits_btn = pygame.Rect(CENTER_X - 150, 500, 300, 60)
-    exit_btn = pygame.Rect(CENTER_X - 150, 590, 300, 60)
+    # six buttons instead of five: spaced a bit tighter so they all fit
+    single_btn = pygame.Rect(CENTER_X - 150, 210, 300, 60)
+    multi_btn = pygame.Rect(CENTER_X - 150, 290, 300, 60)
+    training_btn = pygame.Rect(CENTER_X - 150, 370, 300, 60)
+    controls_btn = pygame.Rect(CENTER_X - 150, 450, 300, 60)
+    credits_btn = pygame.Rect(CENTER_X - 150, 530, 300, 60)
+    exit_btn = pygame.Rect(CENTER_X - 150, 610, 300, 60)
 
 
     #Button List and Commands in Menu Screen
@@ -73,6 +75,8 @@ def menu_screen():
                     return "single"
                 if multi_btn.collidepoint(mouse_pos):
                     return "multi"
+                if training_btn.collidepoint(mouse_pos):
+                    return "training"
                 if controls_btn.collidepoint(mouse_pos):
                     return "controls"
                 if credits_btn.collidepoint(mouse_pos):
@@ -86,6 +90,7 @@ def menu_screen():
 
         draw_button(screen, "Single Player", single_btn, mouse_pos)
         draw_button(screen, "Multiplayer", multi_btn, mouse_pos)
+        draw_button(screen, "Training", training_btn, mouse_pos)
         draw_button(screen, "Controls", controls_btn, mouse_pos)
         draw_button(screen, "Credits", credits_btn, mouse_pos)
         draw_button(screen, "Exit", exit_btn, mouse_pos)
@@ -185,6 +190,7 @@ def controls_screen():
     tips = [
         "Attacks wind up first - watch the outline, then block or dodge",
         "Block stops ALL damage but drains your guard - break it and you're open",
+        "Block at the LAST moment (gold shield) to PARRY: the attacker is stunned",
         "Crouch ducks jabs and high fireballs - a full meter fires the special",
     ]
 
@@ -220,7 +226,7 @@ def controls_screen():
 
         for i, tip in enumerate(tips): #enumerate gives the thing in the list plus what position it is in. ex. [0,"apple"]
             text = controls_font.render(tip, True, (230, 205, 170))
-            screen.blit(text, text.get_rect(center=(CENTER_X, 540 + i * 32)))
+            screen.blit(text, text.get_rect(center=(CENTER_X, 522 + i * 30)))
 
         draw_button(screen, "Back", back_btn, mouse_pos)
         pygame.display.update()
@@ -276,5 +282,7 @@ while state != "quit":
         state = game.run_game(screen, mode="single", level=int(state.split("_")[1]))
     elif state == "multi":
         state = game.run_game(screen, mode="multi")
+    elif state == "training":
+        state = game.run_game(screen, mode="training")  # ESC + Quit Match to leave
 
 pygame.quit()
