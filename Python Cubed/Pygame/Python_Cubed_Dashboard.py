@@ -14,8 +14,8 @@ from matplotlib.backends.backend_tkagg import FigureCanvasTkAgg
 # ============================================================
 
 APP_TITLE = "Python Cubed"
-TEAM_NAME = "Avery, Kalel, & Justin"
-DEFAULT_CSV = "Cleaned_worldwide_video_games.csv"
+TEAM_NAME = "Kalel, Avery, and Justin"
+DEFAULT_CSV = "Cleaned_worldwide_video_games(2).csv"
 GAME_MENU_FILE = "menu.py"
 
 BG = "#17130f"
@@ -51,8 +51,8 @@ class PythonCubedDashboard:
         self.record_count_var = tk.StringVar(value="--")
         self.status_var = tk.StringVar(value="Waiting for dataset")
 
-        self.kpi_total_games_var = tk.StringVar(value="--")
-        self.kpi_top_genre_var = tk.StringVar(value="--")
+        self.kpi_total_games_var = tk.StringVar(value="--")  # Action-market KPI
+        self.kpi_market_opportunity_var = tk.StringVar(value="--")
         self.kpi_rating_var = tk.StringVar(value="--")
         self.insight_var = tk.StringVar(value="Load the dataset to view a key insight.")
 
@@ -383,19 +383,19 @@ class PythonCubedDashboard:
 
         cards = [
             (
-                "TOTAL GAMES",
+                "ACTION MARKET STRENGTH",
                 self.kpi_total_games_var,
-                "The number of game records in the current selection.",
+                "Action's revenue rank and total support choosing a fast, competitive fighting-game format.",
             ),
             (
-                "TOP GENRE",
-                self.kpi_top_genre_var,
-                "The genre producing the most total revenue.",
+                "LATIN AMERICA OPPORTUNITY",
+                self.kpi_market_opportunity_var,
+                "Latin America is the CSV's closest regional proxy for a South American launch market.",
             ),
             (
-                "AVERAGE RATING",
+                "TOP USER RATING",
                 self.kpi_rating_var,
-                "The average user rating for the selected games.",
+                "The strongest rating in the data supports emphasizing polish, depth, and replayability.",
             ),
         ]
 
@@ -452,7 +452,7 @@ class PythonCubedDashboard:
 
         chart_names = [
             "Revenue by Genre",
-            "Genre Distribution",
+            "Regional Opportunity",
             "Revenue vs Rating",
         ]
 
@@ -524,14 +524,15 @@ class PythonCubedDashboard:
             game_story,
             text=(
                 "DATA FINDING\n"
-                "Competitive and action-oriented games attract strong engagement.\n\n"
+                "Action is one of the dataset's two highest-revenue genres, while highly rated games reach 9.8/10.\n\n"
                 "↓\n\n"
                 "DESIGN DECISION\n"
-                "Build a fast, competitive experience with clear progression.\n\n"
+                "Build a polished, competitive, Street Fighter-style action game with a memorable Python theme.\n\n"
                 "↓\n\n"
                 "GAME FEATURE\n"
-                "Snake combat, multiplayer battles, six progressively harder CPU levels, "
-                "special attacks, and saved unlock progress."
+                "One-on-one snake combat, light and heavy attacks, blocking, dodging, special moves, multiplayer, "
+                "and six progressively harder CPU levels. Latin America's strong per-title performance also supports "
+                "testing a localized South American release."
             ),
             bg=PANEL,
             fg=CREAM,
@@ -675,7 +676,7 @@ class PythonCubedDashboard:
 
         if data.empty:
             self.kpi_total_games_var.set("0")
-            self.kpi_top_genre_var.set("No data")
+            self.kpi_market_opportunity_var.set("No data")
             self.kpi_rating_var.set("--")
             self.insight_var.set("No rows match the selected filters.")
             self.findings_label.config(text="No findings are available for the current filters.")
@@ -688,15 +689,44 @@ class PythonCubedDashboard:
         self.create_chart(data)
 
     def update_kpis(self, data):
-        total_games = data["Game_Title"].nunique()
-        revenue_by_genre = data.groupby("Genre")["Revenue_M_USD"].sum()
-        top_genre = revenue_by_genre.idxmax() if not revenue_by_genre.empty else "--"
-        average_rating = data["Avg_User_Rating"].mean()
+        revenue_by_genre = (
+            data.groupby("Genre")["Revenue_M_USD"]
+            .sum()
+            .sort_values(ascending=False)
+        )
 
-        self.kpi_total_games_var.set(f"{total_games:,}")
-        self.kpi_top_genre_var.set(str(top_genre))
+        # KPI 1: Action-market strength. We report its real rank rather than
+        # claiming it is first when another genre leads the current selection.
+        if "Action" in revenue_by_genre.index:
+            action_revenue = revenue_by_genre.loc["Action"]
+            action_rank = revenue_by_genre.index.tolist().index("Action") + 1
+            self.kpi_total_games_var.set(
+                f"#{action_rank} genre\n${action_revenue:,.1f}M"
+            )
+        else:
+            self.kpi_total_games_var.set("No Action data")
+
+        # KPI 2: Latin America is the dataset's closest available proxy for
+        # South America. This measures revenue opportunity, not accounting profit.
+        latin_america = data[data["Region"] == "Latin America"]
+        overall_revenue_per_title = data["Revenue_M_USD"].mean()
+        latin_revenue_per_title = latin_america["Revenue_M_USD"].mean()
+
+        if latin_america.empty or not pd.notna(latin_revenue_per_title):
+            self.kpi_market_opportunity_var.set("No Latin America data")
+        else:
+            lift = (
+                (latin_revenue_per_title / overall_revenue_per_title - 1) * 100
+                if overall_revenue_per_title else 0
+            )
+            self.kpi_market_opportunity_var.set(
+                f"${latin_revenue_per_title:,.1f}M/title\n({lift:+.1f}% vs avg)"
+            )
+
+        # KPI 3: the CSV uses a 10-point rating scale (values reach 9.8).
+        top_rating = data["Avg_User_Rating"].max()
         self.kpi_rating_var.set(
-            f"{average_rating:.2f} / 5" if pd.notna(average_rating) else "--"
+            f"{top_rating:.1f} / 10" if pd.notna(top_rating) else "--"
         )
 
     def update_findings(self, data):
@@ -705,31 +735,52 @@ class PythonCubedDashboard:
             .sum()
             .sort_values(ascending=False)
         )
+
         top_genre = revenue_by_genre.index[0]
         top_revenue = revenue_by_genre.iloc[0]
-
-        audience_counts = data["Target_Audience"].value_counts()
-        top_audience = audience_counts.index[0] if not audience_counts.empty else "Unknown"
-
-        valid_relationship = data[["Avg_User_Rating", "Revenue_M_USD"]].dropna()
-        correlation = valid_relationship["Avg_User_Rating"].corr(
-            valid_relationship["Revenue_M_USD"]
-        )
-
-        if pd.isna(correlation):
-            relationship_text = "The filtered data does not contain enough values to measure the rating/revenue relationship."
-        elif correlation >= 0.25:
-            relationship_text = "Higher ratings generally appear alongside higher revenue."
-        elif correlation <= -0.25:
-            relationship_text = "Higher ratings do not necessarily produce higher revenue in this selection."
+        if "Action" in revenue_by_genre.index:
+            action_revenue = revenue_by_genre.loc["Action"]
+            action_rank = revenue_by_genre.index.tolist().index("Action") + 1
+            action_text = (
+                f"Action ranks #{action_rank} of {len(revenue_by_genre)} genres with "
+                f"${action_revenue:,.1f}M in revenue. Together with {top_genre}'s "
+                f"${top_revenue:,.1f}M lead, the data shows strong demand for competitive, "
+                f"high-energy play—supporting our Street Fighter-style format."
+            )
         else:
-            relationship_text = "Ratings and revenue have only a weak relationship in this selection."
+            action_text = "No Action records remain under the selected filters."
+
+        latin_america = data[data["Region"] == "Latin America"]
+        overall_avg_revenue = data["Revenue_M_USD"].mean()
+        latin_avg_revenue = latin_america["Revenue_M_USD"].mean()
+        latin_avg_units = latin_america["Units_Sold_Millions"].mean()
+        region_share = len(latin_america) / len(data) * 100 if len(data) else 0
+
+        if latin_america.empty:
+            opportunity_text = "No Latin America records remain under the selected filters."
+        else:
+            lift = ((latin_avg_revenue / overall_avg_revenue) - 1) * 100 if overall_avg_revenue else 0
+            opportunity_text = (
+                f"Latin America represents only {region_share:.1f}% of records but averages "
+                f"${latin_avg_revenue:,.1f}M revenue and {latin_avg_units:.2f}M units per title "
+                f"({lift:+.1f}% revenue per title versus average). This supports testing a "
+                f"localized South American release, though costs are needed to prove profit."
+            )
+
+        top_rating = data["Avg_User_Rating"].max()
+        high_rated = data[data["Avg_User_Rating"] >= 8.0]
+        high_rated_share = len(high_rated) / len(data) * 100 if len(data) else 0
+        rating_text = (
+            f"The highest user rating is {top_rating:.1f}/10, and {high_rated_share:.1f}% of selected titles "
+            f"score at least 8.0. That encouraged polished mechanics and replay value: blocking, dodging, "
+            f"special attacks, multiplayer, and six CPU levels."
+        )
 
         self.findings_label.config(
             text=(
-                f"1. {top_genre} is the top revenue genre at ${top_revenue:,.1f} million.\n\n"
-                f"2. {top_audience} is the most common target audience in the current data.\n\n"
-                f"3. {relationship_text}"
+                f"1. {action_text}\n\n"
+                f"2. {rating_text}\n\n"
+                f"3. {opportunity_text}"
             )
         )
 
@@ -777,32 +828,63 @@ class PythonCubedDashboard:
 
             top_genre = graph.index[0]
             top_value = graph.iloc[0]
-            self.insight_var.set(
-                f"{top_genre} produces the highest total revenue in the current selection "
-                f"at ${top_value:,.1f} million."
+            if "Action" in graph.index:
+                action_value = graph.loc["Action"]
+                action_rank = graph.index.tolist().index("Action") + 1
+                self.insight_var.set(
+                    f"{top_genre} leads at ${top_value:,.1f}M, while Action ranks #{action_rank} "
+                    f"at ${action_value:,.1f}M. Action's top-tier performance supports choosing "
+                    f"a fast, competitive Street Fighter-style game."
+                )
+            else:
+                self.insight_var.set(
+                    f"{top_genre} produces the highest total revenue in the current selection "
+                    f"at ${top_value:,.1f} million; no Action records remain under these filters."
+                )
+
+        elif self.active_chart == "Regional Opportunity":
+            regional = (
+                data.groupby("Region")
+                .agg(
+                    average_revenue_per_title=("Revenue_M_USD", "mean"),
+                    records=("Game_Title", "size"),
+                    average_units_per_title=("Units_Sold_Millions", "mean"),
+                )
+                .sort_values("average_revenue_per_title", ascending=False)
             )
 
-        elif self.active_chart == "Genre Distribution":
-            graph = (
-                data.groupby("Genre")["Units_Sold_Millions"]
-                .sum()
-                .sort_values(ascending=False)
+            colors = [
+                GOLD if region == "Latin America" else BUTTON
+                for region in regional.index
+            ]
+            regional["average_revenue_per_title"].plot(
+                kind="bar", ax=ax, color=colors
             )
-            graph.plot(
-                kind="pie",
-                autopct="%1.1f%%",
-                startangle=90,
-                ax=ax,
-                textprops={"fontsize": 8},
+            ax.set_title(
+                "Regional Market Opportunity: Average Revenue per Title",
+                fontsize=15,
+                fontweight="bold",
             )
-            ax.set_title("Share of Units Sold by Genre", fontsize=15, fontweight="bold")
-            ax.set_ylabel("")
+            ax.set_xlabel("Region (Latin America is used as the South America proxy)")
+            ax.set_ylabel("Average Revenue per Title (Millions USD)")
+            ax.tick_params(axis="x", rotation=30)
 
-            top_genre = graph.index[0]
-            share = graph.iloc[0] / graph.sum() * 100 if graph.sum() else 0
-            self.insight_var.set(
-                f"{top_genre} represents the largest share of units sold at approximately {share:.1f}%."
-            )
+            if "Latin America" in regional.index:
+                latin = regional.loc["Latin America"]
+                overall = data["Revenue_M_USD"].mean()
+                lift = ((latin["average_revenue_per_title"] / overall) - 1) * 100 if overall else 0
+                share = latin["records"] / len(data) * 100 if len(data) else 0
+                self.insight_var.set(
+                    f"Latin America accounts for only {share:.1f}% of the selected records but averages "
+                    f"${latin['average_revenue_per_title']:,.1f}M revenue per title ({lift:+.1f}% versus "
+                    f"the dataset average) and {latin['average_units_per_title']:.2f}M units per title. "
+                    f"That combination suggests an underrepresented South American market opportunity; "
+                    f"profit cannot be confirmed without cost data."
+                )
+            else:
+                self.insight_var.set(
+                    "No Latin America records remain under the selected filters, so the South America proxy cannot be evaluated."
+                )
 
         else:
             clean = data[["Avg_User_Rating", "Revenue_M_USD"]].dropna()
@@ -823,15 +905,18 @@ class PythonCubedDashboard:
                 self.insight_var.set("There is not enough data to calculate the relationship.")
             elif correlation >= 0.25:
                 self.insight_var.set(
-                    f"The chart shows a positive rating/revenue relationship (correlation {correlation:.2f})."
+                    f"Ratings and revenue show a positive relationship (correlation {correlation:.2f}). "
+                    f"This supports investing in polished controls, defensive options, special moves, and replayability."
                 )
             elif correlation <= -0.25:
                 self.insight_var.set(
-                    f"The chart shows a negative rating/revenue relationship (correlation {correlation:.2f})."
+                    f"Ratings and revenue show a negative relationship here (correlation {correlation:.2f}), "
+                    f"so our design case rests on Action's market strength—not a claim that ratings guarantee revenue."
                 )
             else:
                 self.insight_var.set(
-                    f"Ratings and revenue have a weak relationship (correlation {correlation:.2f})."
+                    f"Ratings and revenue have a weak relationship (correlation {correlation:.2f}). "
+                    f"We therefore use the 9.8/10 ceiling as a quality benchmark, not proof that ratings cause sales."
                 )
 
         ax.spines["top"].set_visible(False)
