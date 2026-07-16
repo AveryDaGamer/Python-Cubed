@@ -283,6 +283,8 @@ while state != "quit":
     elif state == "multi":
         state = game.run_game(screen, mode="multi")
     elif state == "training":
-        state = game.run_game(screen, mode="training")  # ESC + Quit Match to leave
+        state = "menu"
+    else:
+        raise ValueError(f"Unknown state: {state}")
 
 pygame.quit()
