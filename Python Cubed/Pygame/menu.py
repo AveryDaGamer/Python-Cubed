@@ -3,7 +3,7 @@ import os
 import pygame
 import game
 
-# tell Windows not to blurry-upscale the window on high-DPI displays,
+# Windows does not blur-upscale the window on high-DPI displays,
 # so text renders at the screen's real resolution
 if os.name == "nt":
     try:
@@ -22,7 +22,7 @@ clock = pygame.time.Clock()
 
 CENTER_X = game.SCREEN_W // 2
 
-title_font = game.make_font(68, bold=True)
+title_font = game.make_font(68, bold=True) #Title Size
 button_font = game.make_font(36)
 small_font = game.make_font(27)
 controls_font = game.make_font(24)
@@ -43,15 +43,15 @@ def draw_background(darken=90):
         if darken:
             shade = pygame.Surface((game.SCREEN_W, game.SCREEN_H))
             shade.set_alpha(darken)
-            shade.fill((42, 22, 12))  # warm dusk shadow instead of flat black
+            shade.fill((42, 22, 12))  # warm dusk shadow instead of flat black shadow
             screen.blit(shade, (0, 0))
     else:
         screen.fill((84, 54, 38))  # sandstone fallback if the image is missing
 
 
 def draw_button(surface, text, rect, mouse_pos, enabled=True):
-    """Sandstone-block buttons to match the desert arch background."""
-    game.draw_stone_button(surface, text, rect, mouse_pos, button_font, enabled)
+    """Sandstone-block buttons to match the desert arch background.""" #This text can change depending on the background
+    game.draw_stone_button(surface, text, rect, mouse_pos, button_font, enabled) 
 
 
 def menu_screen():
@@ -61,6 +61,8 @@ def menu_screen():
     credits_btn = pygame.Rect(CENTER_X - 150, 500, 300, 60)
     exit_btn = pygame.Rect(CENTER_X - 150, 590, 300, 60)
 
+
+    #Button List and Commands in Menu Screen
     while True:
         mouse_pos = pygame.mouse.get_pos()
         for event in pygame.event.get():
@@ -216,7 +218,7 @@ def controls_screen():
             screen.blit(k1, k1.get_rect(center=(CENTER_X - 220, y)))
             screen.blit(k2, k2.get_rect(center=(CENTER_X + 220, y)))
 
-        for i, tip in enumerate(tips):
+        for i, tip in enumerate(tips): #enumerate gives the thing in the list plus what position it is in. ex. [0,"apple"]
             text = controls_font.render(tip, True, (230, 205, 170))
             screen.blit(text, text.get_rect(center=(CENTER_X, 540 + i * 32)))
 
