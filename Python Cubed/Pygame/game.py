@@ -1,4 +1,4 @@
-# game.py - game
+# game.py
 import json
 import os
 import pygame
