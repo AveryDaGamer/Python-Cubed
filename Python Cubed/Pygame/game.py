@@ -4,25 +4,24 @@ import os
 import pygame
 import random
 
-# --- arena (1.25x the original 800x600) ---
-SCREEN_W = 1000
-SCREEN_H = 750
-GROUND_Y = 562       # y-coordinate of the floor line
-P1_START_X = 250
-P2_START_X = 750
+SCREEN_W = 1000 #screen width
+SCREEN_H = 750 #screen height
+GROUND_Y = 562       #height of floor / y-coordinate of the floor line
+P1_START_X = 250 #where player one is spawned in 
+P2_START_X = 750 #where player two is spawned in
 
 ROUNDS_TO_WIN = 2    # best of 3
 KO_FREEZE = 120      # frames the "K.O." message stays up before the next round (2s)
 COUNTDOWN_FRAMES = 180  # 3... 2... 1... before each round (3s)
 FIGHT_FLASH = 45     # frames "FIGHT!" stays on screen once the round starts
 
-BODY_WIDTH = 170
-STAND_HEIGHT = 270
-CROUCH_HEIGHT = 140  # short enough that a standing punch whiffs over your head
+BODY_WIDTH = 170 #player width
+STAND_HEIGHT = 270 #player height
+CROUCH_HEIGHT = 140  # short enough that a standing punch whiffs over your head. however, heavy punch will still hit
 
 # fighter identity colors (fallback bodies + UI label tints, matching the snakes)
-P1_COLOR = (70, 150, 85)     # green python
-P2_COLOR = (175, 125, 70)    # brown python
+P1_COLOR = (70, 150, 85)     # green python, but is just a placeholder when not using png
+P2_COLOR = (175, 125, 70)    # brown python--same thing.
 P1_ACCENT = (120, 210, 140)
 P2_ACCENT = (225, 175, 110)
 
@@ -837,24 +836,24 @@ def run_game(screen, mode="multi", level=1):
     victory_note = ""    # "Level N unlocked!" on the victory screen
 
     while True:  # Main Loop
-        mouse_pos = pygame.mouse.get_pos()
+        mouse_pos = pygame.mouse.get_pos() #Gets cursor for buttons to go back to menu/quit
         for event in pygame.event.get():
             if event.type == pygame.QUIT:
                 return "quit"
             if event.type == pygame.KEYDOWN:
                 if event.key == pygame.K_ESCAPE:
                     if state == "paused":
-                        state = prev_state       # resume the fight
+                        state = prev_state       # resumes the fight
                     elif state == "match_over":
                         return "menu"
                     else:
-                        prev_state = state       # freeze everything
+                        prev_state = state       # pause everything
                         state = "paused"
                 elif state == "match_over":
-                    return "menu"  # any key after the match ends
+                    return "menu"  # any key after the match ends returns to the menu screen
             if event.type == pygame.MOUSEBUTTONDOWN and event.button == 1:
-                if state == "paused":
-                    if resume_btn.collidepoint(mouse_pos):
+                if state == "paused": 
+                    if resume_btn.collidepoint(mouse_pos): 
                         state = prev_state
                     elif quit_btn.collidepoint(mouse_pos):
                         return "menu"
@@ -871,7 +870,7 @@ def run_game(screen, mode="multi", level=1):
         elif state == "fighting":
             if fight_flash > 0:
                 fight_flash -= 1
-            all_sprites.update()
+            all_sprites.update() #Updates positions visually
 
             # spawn any specials that were triggered this frame
             for p in (player1, player2):
