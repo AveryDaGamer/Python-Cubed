@@ -1,5 +1,5 @@
 # game.py
-import json
+import csv
 import os
 import pygame
 import random
@@ -14,6 +14,8 @@ ROUNDS_TO_WIN = 2    # best of 3
 KO_FREEZE = 120      # frames the "K.O." message stays up before the next round (2s)
 COUNTDOWN_FRAMES = 180  # 3... 2... 1... before each round (3s)
 FIGHT_FLASH = 45     # frames "FIGHT!" stays on screen once the round starts
+ROUND_SECONDS = 60   # round clock: when it hits 0 the round goes to SUDDEN DEATH
+SUDDEN_DEATH_DAMAGE = 999  # in sudden death every attack is lethal - no stalling
 
 BODY_WIDTH = 170 #player width
 STAND_HEIGHT = 270 #player height
@@ -24,6 +26,22 @@ P1_COLOR = (70, 150, 85)     # green python, but is just a placeholder when not 
 P2_COLOR = (175, 125, 70)    # brown python--same thing.
 P1_ACCENT = (120, 210, 140)
 P2_ACCENT = (225, 175, 110)
+
+# --- animation ---
+# each fighter can have one sheet per state in the assets folder, named either
+# snake_green_walk.png style or the pack's SnakeGreen-Walk.png style. Missing
+# sheets fall back gracefully (a state without art holds the neutral pose).
+ANIM_SHEETS = ('walk', 'idle', 'attack', 'hurt', 'death')
+WALK_ANIM_SPEED = 4   # game frames per animation frame while slithering
+IDLE_ANIM_SPEED = 8   # idle sway plays at half speed
+HURT_ANIM_SPEED = 4   # loops while staggered
+DEATH_ANIM_SPEED = 6  # plays ONCE at K.O., then holds the last frame
+
+# --- input buffering ---
+# action taps are captured from KEYDOWN events and held for a few frames, so a
+# quick tap that lands BETWEEN two frame polls (easy when hitting several keys
+# at once) is never silently dropped
+INPUT_BUFFER_FRAMES = 8
 
 # --- attack numbers ---
 # every attack "winds up" first: its outline appears but can't hit yet,
@@ -39,6 +57,25 @@ HEAVY_DAMAGE = 22    # ...but big reward, and it reaches low enough to catch cro
 SPECIAL_WINDUP = 12  # charge-up before the energy ball actually appears
 SPECIAL_DAMAGE = 45  # the projectile: a full meter should hit like a truck
 
+# --- combos / hitstun ---
+# a clean hit STAGGERS the victim: they can't move, attack, block, or dodge
+# until the stun wears off. The game has exactly ONE chain: a landed heavy
+# refunds your cooldown just enough to link a light into the stagger.
+# (heavy -> light combos; lights can't chain into anything on their own)
+LIGHT_HITSTUN = 22          # frames a jab staggers the victim
+HEAVY_HITSTUN = 40          # heavies and specials stagger much longer
+SPECIAL_HITSTUN = 40
+HEAVY_CANCEL_COOLDOWN = 28  # cooldown after a LANDED heavy: the light follow-up
+                            # fits inside the 40-frame stagger (28+6+1 = 35 < 40)
+                            # but a second heavy does not (28+14+1 = 43 > 40)
+COMBO_SCALING = 0.85      # each combo hit deals 85% of the previous one
+COMBO_PUSHBACK = 26       # combo hits shove the victim back: chains push themselves out
+HITSTUN_DECAY = 3         # each combo hit stuns 3 frames less: every chain has a
+                          # natural ceiling (~3 jabs) even if pushback can't separate
+POST_STUN_RECOVERY = 30   # after the stun wears off, hits deal damage but CANNOT
+                          # stagger or interrupt for this long - a guaranteed window
+                          # to dodge, raise a block, or start a counter-combo
+
 # --- blocking / guard gauge ---
 # a good block stops ALL damage, but it spends the guard gauge: each blocked
 # hit eats a big chunk and even holding block wears it down. Run it dry and
@@ -49,6 +86,17 @@ GUARD_HIT_COST = 35     # each blocked hit eats about a third of the gauge
 GUARD_HOLD_DRAIN = 0.4  # holding block drains it (~4 seconds from full to empty)
 GUARD_REGEN = 0.3       # recovery per frame while not blocking
 GUARD_RECOVER = 35      # a broken guard works again once it climbs back to this
+
+# --- parry ---
+# raise the shield at the LAST moment and the block becomes a PARRY: the hit
+# is deflected for free (no guard cost) and the ATTACKER bounces off, staggered
+# and wide open for a punish. Only a fresh block parries - a held guard is just
+# a normal block - so it rewards reading the wind-up, not holding a button.
+PARRY_WINDOW = 8        # the block only parries during its first 8 active frames
+PARRY_STUN = 50         # frames a parried attacker is staggered (a free punish)
+PARRY_PUSHBACK = 20     # the parried attacker bounces off the shield
+PARRY_METER_GAIN = 20   # a parry charges the defender's special meter fast
+PARRY_FLASH = 35        # frames the "PARRY!" popup stays on screen
 
 # --- dodge numbers ---
 DODGE_FRAMES = 14    # you are invincible for this many frames
@@ -95,25 +143,27 @@ AI_LEVELS = {
 MAX_LEVEL = 6
 
 # progress is saved next to the game files so it survives quitting
-SAVE_PATH = os.path.join(os.path.dirname(os.path.abspath(__file__)), "save.json")
+SAVE_PATH = os.path.join(os.path.dirname(os.path.abspath(__file__)), "save.csv")
 
 
 def load_progress():
     """Read {'unlocked': highest playable level, 'beaten': highest beaten level}."""
     try:
-        with open(SAVE_PATH) as f:
-            data = json.load(f)
-        beaten = max(0, min(MAX_LEVEL, int(data.get("beaten", 0))))
-        unlocked = max(1, min(MAX_LEVEL, int(data.get("unlocked", 1))))
+        with open(SAVE_PATH, newline="") as f:
+            data = next(csv.DictReader(f))
+        beaten = max(0, min(MAX_LEVEL, int(data.get("beaten") or 0)))
+        unlocked = max(1, min(MAX_LEVEL, int(data.get("unlocked") or 1)))
         return {'unlocked': max(unlocked, min(MAX_LEVEL, beaten + 1)), 'beaten': beaten}
-    except (OSError, ValueError):
+    except (OSError, ValueError, StopIteration):
         return {'unlocked': 1, 'beaten': 0}  # fresh save
 
 
 def save_progress(progress):
     try:
-        with open(SAVE_PATH, "w") as f:
-            json.dump(progress, f)
+        with open(SAVE_PATH, "w", newline="") as f:
+            writer = csv.DictWriter(f, fieldnames=["unlocked", "beaten"])
+            writer.writeheader()
+            writer.writerow(progress)
     except OSError:
         pass  # a failed save should never crash the game
 
@@ -133,6 +183,42 @@ def load_sprite(path, face_left_source=False):
     if face_left_source:
         img = pygame.transform.flip(img, True, False)
     return img
+
+
+def load_animation(path, frame_size=32):
+    """Slice a horizontal sprite sheet of right-facing frames into a list."""
+    sheet = pygame.image.load(path).convert_alpha()
+    return [sheet.subsurface((x, 0, frame_size, sheet.get_height()))
+            for x in range(0, sheet.get_width() - frame_size + 1, frame_size)]
+
+
+def load_fighter_animations(assets_dir, prefix, alt_prefix=None,
+                            static_name=None, static_faces_left=False):
+    """Load every animation sheet available for one fighter.
+
+    For each state in ANIM_SHEETS this looks for assets/<prefix>_<state>.png
+    and (if alt_prefix is given) the pack-style <alt_prefix>-<State>.png, so
+    original pack files can be dropped in without renaming. Returns a dict of
+    {state: [frames]} with only the states that were found; falls back to the
+    old static sprite as a one-frame 'walk', or None (plain colored block)."""
+    anims = {}
+    for state in ANIM_SHEETS:
+        candidates = [f"{prefix}_{state}.png"]
+        if alt_prefix:
+            candidates.append(f"{alt_prefix}-{state.capitalize()}.png")
+        for name in candidates:
+            try:
+                anims[state] = load_animation(os.path.join(assets_dir, name))
+                break
+            except (pygame.error, FileNotFoundError):
+                continue
+    if not anims and static_name:
+        try:
+            anims['walk'] = [load_sprite(os.path.join(assets_dir, static_name),
+                                         static_faces_left)]
+        except (pygame.error, FileNotFoundError):
+            return None
+    return anims or None
 
 
 class Projectile(pygame.sprite.Sprite):
@@ -156,9 +242,10 @@ class Projectile(pygame.sprite.Sprite):
 
 
 class Player(pygame.sprite.Sprite):
-    def __init__(self, x, color, controls, sprite=None):
+    def __init__(self, x, color, controls, anims=None):
         super().__init__()
         self.is_ai = False
+        self.is_dummy = False       # training dummy: presses nothing, just stands there
         self.target = None          # the opponent, set for AI players
         self.projectile_group = None  # set in run_game so the AI can see fireballs
         self.ai_params = AI_LEVELS[3]
@@ -172,12 +259,24 @@ class Player(pygame.sprite.Sprite):
         self.ai_wants_dodge = False
         self.ai_wants_jump = False
         self.color = color
-        if sprite is not None:
-            # pre-squashed frames: rearing up tall vs coiled low for crouching
-            self.stand_sprite = pygame.transform.smoothscale(sprite, (BODY_WIDTH, STAND_HEIGHT))
-            self.crouch_sprite = pygame.transform.smoothscale(sprite, (BODY_WIDTH, CROUCH_HEIGHT))
+        if anims:
+            # every frame pre-scaled to body size at load
+            # (nearest-neighbour scale keeps the pixel art crisp)
+            self.anims = {state: [pygame.transform.scale(f, (BODY_WIDTH, STAND_HEIGHT))
+                                  for f in frames]
+                          for state, frames in anims.items()}
+            # crouch isn't animated: it holds a squashed neutral pose
+            src = (anims.get('idle') or anims.get('walk')
+                   or next(iter(anims.values())))[0]
+            self.crouch_pose = pygame.transform.scale(src, (BODY_WIDTH, CROUCH_HEIGHT))
         else:
-            self.stand_sprite = self.crouch_sprite = None  # plain colored block
+            self.anims = {}          # plain colored block
+            self.crouch_pose = None
+        self.anim_state = 'neutral'
+        self.anim_index = 0
+        self.anim_timer = 0
+        self.moving = False  # walked this frame -> the slither cycle advances
+        self.dying = False   # K.O.'d: play the death animation once and hold
         self.image = pygame.Surface((BODY_WIDTH, STAND_HEIGHT))
         self.image.fill(color)
         self.rect = self.image.get_rect()
@@ -193,6 +292,7 @@ class Player(pygame.sprite.Sprite):
         self.special_windup = 0  # charge-up frames left before the fireball spawns
         self.attacking = 0       # frames remaining in the current attack
         self.attack_active_frames = LIGHT_ACTIVE  # how long the pending attack stays out
+        self.attack_total = LIGHT_WINDUP + LIGHT_ACTIVE  # full swing length, for anim scrub
         self.attack_cooldown = 0 # frames until you can attack again
         self.attack_cooldown_max = LIGHT_COOLDOWN  # length of the current cooldown, for the HUD bar
         self.attack_type = 'light'
@@ -206,11 +306,17 @@ class Player(pygame.sprite.Sprite):
         self.dodging = 0         # frames remaining in the current dodge (invincible)
         self.dodge_cooldown = 0
         self.dodge_dir = 1
+        self.hitstun = 0         # frames of stagger left after being hit (helpless)
+        self.recovery = 0        # post-stun grace: can act, can't be re-staggered
+        self.parry_flash = 0     # frames left of the "PARRY!" popup after a deflect
+        self.combo_hits = 0      # consecutive hits landed on a still-staggered victim
         self.meter = 0           # special meter, 0..METER_MAX
         self.fire_special = False  # flag picked up by the main loop to spawn the ball
         # remember last frame's buttons so dodge/special fire once per press
         self.prev_dodge = False
         self.prev_special = False
+        # taps buffered from KEYDOWN events (a press between frames still lands)
+        self.input_buffer = {'punch': 0, 'heavy': 0, 'special': 0, 'dodge': 0, 'jump': 0}
         self.evade_counted = True  # so a dodged swing only counts once in the stats
         self.update_image()  # show the sprite from frame one (countdown included)
         # match-long stats for the victory screen (NOT reset between rounds)
@@ -221,7 +327,9 @@ class Player(pygame.sprite.Sprite):
             'hits': 0,     # attacks that landed clean
             'damage': 0,   # total damage dealt (including chip)
             'blocked': 0,  # incoming hits this player blocked
+            'parried': 0,  # incoming hits deflected with a perfectly timed block
             'dodged': 0,   # incoming attacks this player dodged with i-frames
+            'best_combo': 0,  # longest hit chain landed this match
         }
 
     def reset(self, x):
@@ -243,10 +351,21 @@ class Player(pygame.sprite.Sprite):
         self.guard_broken = False
         self.dodging = 0
         self.dodge_cooldown = 0
+        self.hitstun = 0
+        self.recovery = 0
+        self.parry_flash = 0
+        self.combo_hits = 0
         self.meter = 0
         self.fire_special = False
         self.prev_dodge = False
         self.prev_special = False
+        for name in self.input_buffer:
+            self.input_buffer[name] = 0
+        self.anim_state = 'neutral'
+        self.anim_index = 0
+        self.anim_timer = 0
+        self.moving = False
+        self.dying = False
         self.ai_decision_timer = 0
         self.ai_move = 0
         self.ai_wants_punch = False
@@ -260,7 +379,26 @@ class Player(pygame.sprite.Sprite):
 
     def get_human_inputs(self):
         keys = pygame.key.get_pressed()
-        return {name: keys[key] for name, key in self.controls.items()}
+        inputs = {name: keys[key] for name, key in self.controls.items()}
+        # buffered taps count as held: a key that went down and up between two
+        # frame polls (or during a busy moment) still gets acted on
+        for name, frames in self.input_buffer.items():
+            if frames > 0:
+                inputs[name] = True
+        return inputs
+
+    def buffer_key(self, key):
+        """Called from the event loop on KEYDOWN: remember action taps for a
+        few frames so no press is ever lost to frame-boundary timing."""
+        for name in self.input_buffer:
+            if self.controls.get(name) == key:
+                self.input_buffer[name] = INPUT_BUFFER_FRAMES
+
+    def get_dummy_inputs(self):
+        """Training dummy: no brain, no buttons - it stands still and takes hits."""
+        return {name: False for name in
+                ('left', 'right', 'jump', 'crouch', 'punch', 'heavy',
+                 'special', 'block', 'dodge')}
 
     def ai_block_choice(self):
         """Guard if the gauge can take a hit, otherwise duck instead of breaking."""
@@ -322,6 +460,10 @@ class Player(pygame.sprite.Sprite):
                     self.ai_wants_dodge = True    # roll through with i-frames
                 else:
                     self.ai_block_choice()        # raise the guard (if it can take it)
+            elif (self.target.hitstun > 0 and gap <= punch_range
+                    and random.random() < max(0.5, p['punish'])):
+                # they're staggered: link the light (heavy -> light is the combo)
+                self.ai_wants_punch = True
             elif not self.target.on_ground and gap < 260 and random.random() < p['attack']:
                 self.ai_wants_heavy = True        # anti-air: swat jumpers with the big one
             elif (self.target.attack_cooldown > 12 and gap <= punch_range
@@ -380,6 +522,7 @@ class Player(pygame.sprite.Sprite):
             self.attack_active_frames = LIGHT_ACTIVE
             self.attack_cooldown = LIGHT_COOLDOWN
             self.attack_damage = LIGHT_DAMAGE
+        self.attack_total = self.windup + self.attack_active_frames  # for anim scrub
         self.attacking = 0  # nothing can hit until the wind-up finishes
         self.attack_cooldown_max = self.attack_cooldown
         self.attack_type = kind
@@ -387,8 +530,65 @@ class Player(pygame.sprite.Sprite):
         self.evade_counted = False
         self.stats[kind] += 1
 
+    def pick_anim(self):
+        """(state, frames) for this moment, honoring whichever sheets exist."""
+        a = self.anims
+        if self.dying and a.get('death'):
+            return 'death', a['death']
+        if self.hitstun > 0 and a.get('hurt'):
+            return 'hurt', a['hurt']
+        if (self.windup > 0 or self.attacking > 0) and a.get('attack'):
+            return 'attack', a['attack']
+        if self.moving and a.get('walk'):
+            return 'walk', a['walk']
+        if a.get('idle'):
+            return 'idle', a['idle']
+        base = a.get('walk') or next(iter(a.values()))
+        return 'neutral', base  # no sheet for this state: hold the neutral pose
+
+    def _animate(self):
+        """Advance the animation matching this frame's state."""
+        if not self.anims:
+            return
+        state, frames = self.pick_anim()
+        if state != self.anim_state:
+            self.anim_state = state
+            self.anim_index = 0
+            self.anim_timer = 0
+        if state == 'attack':
+            # scrub the swing across wind-up + active frames, start to finish
+            total = max(1, self.attack_total)
+            self.anim_index = min(len(frames) - 1,
+                                  self.anim_timer * len(frames) // total)
+            self.anim_timer += 1
+        elif state == 'neutral':
+            self.anim_index = 0
+        else:
+            speeds = {'walk': WALK_ANIM_SPEED, 'idle': IDLE_ANIM_SPEED,
+                      'hurt': HURT_ANIM_SPEED, 'death': DEATH_ANIM_SPEED}
+            self.anim_timer += 1
+            if self.anim_timer >= speeds[state]:
+                self.anim_timer = 0
+                if state == 'death':
+                    # play once and stay down
+                    self.anim_index = min(self.anim_index + 1, len(frames) - 1)
+                else:
+                    self.anim_index = (self.anim_index + 1) % len(frames)
+
+    def tick_animation(self):
+        """Advance animation outside normal updates (the K.O. freeze), so the
+        death animation plays while the fighters are frozen."""
+        self.moving = False
+        self._animate()
+        self.update_image()
+
     def update(self):
-        inputs = self.get_ai_inputs() if self.is_ai else self.get_human_inputs()
+        if self.is_dummy:
+            inputs = self.get_dummy_inputs()
+        elif self.is_ai:
+            inputs = self.get_ai_inputs()
+        else:
+            inputs = self.get_human_inputs()
 
         # dodge and special only trigger on a fresh press, not while held
         dodge_pressed = inputs['dodge'] and not self.prev_dodge
@@ -402,6 +602,13 @@ class Player(pygame.sprite.Sprite):
             self.attack_cooldown -= 1
         if self.dodge_cooldown > 0:
             self.dodge_cooldown -= 1
+        if self.recovery > 0:
+            self.recovery -= 1
+        if self.parry_flash > 0:
+            self.parry_flash -= 1
+        for name in self.input_buffer:
+            if self.input_buffer[name] > 0:
+                self.input_buffer[name] -= 1
 
         # tick down wind-ups: the attack only becomes dangerous when they finish
         if self.windup > 0:
@@ -413,13 +620,25 @@ class Player(pygame.sprite.Sprite):
             if self.special_windup == 0:
                 self.fire_special = True  # charge complete: main loop spawns the ball
 
-        if self.dodging > 0:
+        if self.hitstun > 0:
+            # staggered by a hit: completely helpless until the stun wears off
+            self.hitstun -= 1
+            if self.hitstun == 0:
+                # stun over: grace period where hits can't re-stagger you,
+                # guaranteeing a real window to dodge, block, or counter
+                self.recovery = POST_STUN_RECOVERY
+            self.crouching = False
+            self.blocking = False
+            self.block_held_frames = 0
+            self.moving = False
+        elif self.dodging > 0:
             # mid-dodge: committed to the roll, invincible, no other actions
             self.dodging -= 1
             self.rect.x += self.dodge_dir * DODGE_SPEED
             self.crouching = False
             self.blocking = False
             self.block_held_frames = 0
+            self.moving = False
         else:
             # once a wind-up starts you are committed: no blocking out of it
             busy = self.attacking > 0 or self.windup > 0 or self.special_windup > 0
@@ -434,11 +653,13 @@ class Player(pygame.sprite.Sprite):
             self.blocking = self.block_held_frames > BLOCK_WINDUP
 
             # walking and jumping only while standing free (not crouched/blocking)
+            self.moving = False
             if not self.crouching and not self.blocking:
                 if inputs['left']:
                     self.rect.x -= self.speed
                 if inputs['right']:
                     self.rect.x += self.speed
+                self.moving = inputs['left'] != inputs['right']  # net movement
                 if inputs['jump'] and self.on_ground:
                     self.vel_y = -15
                     self.on_ground = False
@@ -498,13 +719,18 @@ class Player(pygame.sprite.Sprite):
         if self.rect.right > SCREEN_W:
             self.rect.right = SCREEN_W
 
+        self._animate()
         self.update_image()
 
     def update_image(self):
         """Rebuild the body so facing / crouch / block / dodge are all visible."""
         guarding = self.blocking or self.block_held_frames > 0
-        if self.stand_sprite is not None:
-            frame = self.crouch_sprite if self.crouching else self.stand_sprite
+        if self.anims:
+            if self.crouching:
+                frame = self.crouch_pose  # crouch isn't animated: squashed pose
+            else:
+                state, frames = self.pick_anim()
+                frame = frames[min(self.anim_index, len(frames) - 1)]
             if self.facing == -1:
                 frame = pygame.transform.flip(frame, True, False)
             self.image = frame.copy()
@@ -515,9 +741,18 @@ class Player(pygame.sprite.Sprite):
             self.image = pygame.Surface(self.rect.size)
             self.image.fill(tuple(int(c * 0.55) for c in self.color) if guarding else self.color)
         if self.blocking:
-            # white shield strip on the side facing the opponent
+            # shield strip on the side facing the opponent: GOLD while the block
+            # is fresh enough to parry, settling to white once it's a plain block
+            in_parry_window = self.block_held_frames <= BLOCK_WINDUP + PARRY_WINDOW
+            shield_color = (255, 215, 80) if in_parry_window else (255, 255, 255)
             x = self.rect.width - 12 if self.facing == 1 else 0
-            pygame.draw.rect(self.image, (255, 255, 255), (x, 0, 12, self.rect.height))
+            pygame.draw.rect(self.image, shield_color, (x, 0, 12, self.rect.height))
+        if self.hitstun > 0 and not self.anims.get('hurt'):
+            # red flash while staggered (only when there's no hurt animation)
+            self.image.fill((110, 30, 30), special_flags=pygame.BLEND_RGB_ADD)
+        elif self.recovery > 0 and (self.recovery // 4) % 2 == 0:
+            # white blink during post-stun recovery: "can't be staggered right now"
+            self.image.fill((70, 70, 70), special_flags=pygame.BLEND_RGB_ADD)
         # ghost while dodging = the invincibility frames
         self.image.set_alpha(110 if self.dodging > 0 else 255)
 
@@ -548,13 +783,33 @@ class Player(pygame.sprite.Sprite):
         return self._attack_box()
 
 
-def apply_hit(attacker, defender, damage):
-    """Deal damage, respecting dodges and blocks.
-    Returns True if the attack made contact (clean hit OR blocked)."""
+def apply_hit(attacker, defender, damage, hitstun=0, can_parry=True):
+    """Deal damage, respecting dodges, blocks, and parries. Clean hits stagger
+    the victim and extend combos. Returns True if the attack made contact
+    (hit, blocked, OR parried)."""
     if defender.dodging > 0:
         return False  # invincibility frames: the attack whiffs right through
 
     if defender.blocking:
+        if can_parry and defender.block_held_frames <= BLOCK_WINDUP + PARRY_WINDOW:
+            # PARRY! The shield came up at the last moment: the hit is deflected
+            # for free (no guard damage) and the attacker bounces off, staggered.
+            # This stuns even through post-stun recovery - swinging into a
+            # perfectly timed shield is always punishable.
+            defender.stats['parried'] += 1
+            defender.meter = min(METER_MAX, defender.meter + PARRY_METER_GAIN)
+            defender.parry_flash = PARRY_FLASH
+            attacker.hitstun = max(attacker.hitstun, PARRY_STUN)
+            attacker.windup = 0      # the deflected swing is cancelled outright
+            attacker.attacking = 0
+            push = PARRY_PUSHBACK if attacker.rect.centerx >= defender.rect.centerx \
+                else -PARRY_PUSHBACK
+            attacker.rect.x += push
+            if attacker.rect.left < 0:
+                attacker.rect.left = 0
+            if attacker.rect.right > SCREEN_W:
+                attacker.rect.right = SCREEN_W
+            return True
         # a solid block stops ALL damage, but the hit chunks the guard gauge
         defender.stats['blocked'] += 1
         defender.guard = max(0.0, defender.guard - GUARD_HIT_COST)
@@ -570,11 +825,43 @@ def apply_hit(attacker, defender, damage):
         if defender.rect.right > SCREEN_W:
             defender.rect.right = SCREEN_W
     else:
-        attacker.stats['damage'] += min(damage, defender.health)
+        in_combo = defender.hitstun > 0  # they were already staggered: combo!
+        attacker.combo_hits = attacker.combo_hits + 1 if in_combo else 1
+        attacker.stats['best_combo'] = max(attacker.stats['best_combo'], attacker.combo_hits)
+        # later combo hits deal scaled-down damage so chains can't delete a health bar
+        dealt = max(1, int(damage * COMBO_SCALING ** (attacker.combo_hits - 1)))
+        attacker.stats['damage'] += min(dealt, defender.health)
         attacker.stats['hits'] += 1
-        defender.health = max(0, defender.health - damage)
+        defender.health = max(0, defender.health - dealt)
+        if defender.recovery <= 0:
+            # hitstun decays as the combo grows, so chains end even in the corner
+            decayed_stun = max(0, hitstun - HITSTUN_DECAY * (attacker.combo_hits - 1))
+            defender.hitstun = max(defender.hitstun, decayed_stun)
+            defender.windup = 0     # a clean hit interrupts whatever they had coming
+            defender.attacking = 0
+        # (during post-stun recovery the hit damages, but can NOT re-stagger or
+        # interrupt - the victim keeps their dodge, block, or counter-attack)
         defender.meter = min(METER_MAX, defender.meter + METER_ON_HURT)
         attacker.meter = min(METER_MAX, attacker.meter + METER_ON_HIT)
+        if in_combo:
+            # every extra combo hit shoves the victim back: chains push themselves out
+            push = COMBO_PUSHBACK if defender.rect.centerx >= attacker.rect.centerx \
+                else -COMBO_PUSHBACK
+            before = defender.rect.x
+            defender.rect.x += push
+            if defender.rect.left < 0:
+                defender.rect.left = 0
+            if defender.rect.right > SCREEN_W:
+                defender.rect.right = SCREEN_W
+            # cornered? whatever the wall absorbed pushes the ATTACKER back instead,
+            # so the spacing grows exactly like mid-screen (no corner infinites)
+            absorbed = push - (defender.rect.x - before)
+            if absorbed:
+                attacker.rect.x -= absorbed
+                if attacker.rect.left < 0:
+                    attacker.rect.left = 0
+                if attacker.rect.right > SCREEN_W:
+                    attacker.rect.right = SCREEN_W
     return True
 
 
@@ -616,7 +903,8 @@ def draw_skill_bar(surface, skill_font, x, y, w, h, label, ratio, from_right, br
     surface.blit(text, text.get_rect(center=(x + w // 2, y + h // 2)))
 
 
-def draw_hud(surface, p1, p2, score, font, skill_font):
+def draw_hud(surface, p1, p2, score, font, skill_font, time_left=None,
+             sudden_death=False, score_label=None):
     BAR_WIDTH = 300
     BAR_HEIGHT = 25
     METER_HEIGHT = 12
@@ -667,10 +955,21 @@ def draw_hud(surface, p1, p2, score, font, skill_font):
             draw_skill_bar(surface, skill_font, x0 + i * (COOL_W + 10), COOL_Y,
                            COOL_W, COOL_H, label, ratio, from_right, broken)
 
-    # Score in the middle
-    score_text = font.render(f"{score[0]} - {score[1]}", True, (255, 255, 255))
+    # Score in the middle (training swaps it for a K.O. counter)
+    label = score_label if score_label is not None else f"{score[0]} - {score[1]}"
+    score_text = font.render(label, True, (255, 255, 255))
     score_rect = score_text.get_rect(center=(SCREEN_W // 2, Y + BAR_HEIGHT // 2))
     surface.blit(score_text, score_rect)
+
+    # round clock under the score - goes red when time is nearly up,
+    # then swaps to the SUDDEN DEATH warning once it expires
+    if sudden_death:
+        sd_text = font.render("SUDDEN DEATH", True, (255, 80, 60))
+        surface.blit(sd_text, sd_text.get_rect(center=(SCREEN_W // 2, Y + BAR_HEIGHT + 30)))
+    elif time_left is not None:
+        color = (255, 80, 60) if time_left <= 10 else (255, 255, 255)
+        clock_text = font.render(str(time_left), True, color)
+        surface.blit(clock_text, clock_text.get_rect(center=(SCREEN_W // 2, Y + BAR_HEIGHT + 30)))
 
 
 def draw_banner(surface, big_font, small_font, main_text, sub_text=""):
@@ -755,12 +1054,14 @@ def draw_victory_screen(surface, big_font, font, stat_font,
         ("Heavy attacks thrown", 'heavy'),
         ("Specials fired", 'special'),
         ("Hits landed", 'hits'),
+        ("Best combo", 'best_combo'),
         ("Damage dealt", 'damage'),
         ("Attacks blocked", 'blocked'),
+        ("Attacks parried", 'parried'),
         ("Attacks dodged", 'dodged'),
     ]
     for i, (label, key) in enumerate(rows):
-        y = 315 + i * 44
+        y = 310 + i * 42  # one row tighter so nine stats clear the footer
         lab = stat_font.render(label, True, (230, 200, 50))
         v1 = stat_font.render(str(p1.stats[key]), True, (255, 238, 205))
         v2 = stat_font.render(str(p2.stats[key]), True, (255, 238, 205))
@@ -784,7 +1085,12 @@ def run_game(screen, mode="multi", level=1):
 
     # what each fighter is called in the K.O. / winner messages
     p1_name = "PLAYER 1"
-    p2_name = f"CPU LV.{level}" if mode == "single" else "PLAYER 2"
+    if mode == "single":
+        p2_name = f"CPU LV.{level}"
+    elif mode == "training":
+        p2_name = "DUMMY"
+    else:
+        p2_name = "PLAYER 2"
 
     p1_controls = {
         'left': pygame.K_a, 'right': pygame.K_d, 'jump': pygame.K_w, 'crouch': pygame.K_s,
@@ -797,17 +1103,16 @@ def run_game(screen, mode="multi", level=1):
         'block': pygame.K_SEMICOLON, 'dodge': pygame.K_RSHIFT,
     }
 
-    # snake fighters (fall back to plain colored blocks if the art is missing)
+    # animated snake fighters: picks up every state sheet present in assets/
+    # (walk/idle/attack/hurt/death), falls back to static art, then to blocks
     assets_dir = os.path.join(os.path.dirname(os.path.abspath(__file__)), "assets")
-    try:
-        p1_sprite = load_sprite(os.path.join(assets_dir, "snake_green.png"),
-                                face_left_source=True)  # green art faces left
-        p2_sprite = load_sprite(os.path.join(assets_dir, "snake_brown.png"))
-    except (pygame.error, FileNotFoundError):
-        p1_sprite = p2_sprite = None
+    p1_anims = load_fighter_animations(assets_dir, "snake_green", alt_prefix="SnakeGreen",
+                                       static_name="snake_green.png", static_faces_left=True)
+    p2_anims = load_fighter_animations(assets_dir, "snake_brown", alt_prefix="SnakeBrown",
+                                       static_name="snake_brown.png")
 
-    player1 = Player(P1_START_X, P1_COLOR, p1_controls, sprite=p1_sprite)
-    player2 = Player(P2_START_X, P2_COLOR, p2_controls, sprite=p2_sprite)
+    player1 = Player(P1_START_X, P1_COLOR, p1_controls, anims=p1_anims)
+    player2 = Player(P2_START_X, P2_COLOR, p2_controls, anims=p2_anims)
 
     projectiles = pygame.sprite.Group()
     player1.projectile_group = projectiles
@@ -817,6 +1122,8 @@ def run_game(screen, mode="multi", level=1):
         player2.is_ai = True
         player2.target = player1
         player2.ai_params = AI_LEVELS[max(1, min(MAX_LEVEL, level))]
+    elif mode == "training":
+        player2.is_dummy = True  # stands still, takes hits, respawns on K.O.
 
     all_sprites = pygame.sprite.Group()
     all_sprites.add(player1, player2)
@@ -824,11 +1131,16 @@ def run_game(screen, mode="multi", level=1):
     clock = pygame.time.Clock()
 
     # "countdown" -> "fighting" -> "ko" -> next round countdown, or -> "match_over";
-    # ESC drops into "paused" from any of the action states and back out again
-    state = "countdown"
-    prev_state = "countdown"  # what to resume into when unpausing
+    # ESC drops into "paused" from any of the action states and back out again.
+    # Training has no rounds and no clock: it starts fighting immediately and
+    # only ends when the player quits out.
+    state = "fighting" if mode == "training" else "countdown"
+    prev_state = state  # what to resume into when unpausing
     countdown_timer = COUNTDOWN_FRAMES
-    fight_flash = 0      # frames left of the "FIGHT!" flash
+    round_timer = ROUND_SECONDS * 60  # round clock in frames; no stalling allowed
+    sudden_death = False  # clock ran out: every attack is now lethal
+    sudden_flash = 0     # frames left of the "SUDDEN DEATH!" flash
+    fight_flash = FIGHT_FLASH if mode == "training" else 0  # "FIGHT!" flash frames
     ko_timer = 0         # frames left in the K.O. freeze
     banner = ""          # big message shown during "ko"
     banner_sub = ""
@@ -836,24 +1148,29 @@ def run_game(screen, mode="multi", level=1):
     victory_note = ""    # "Level N unlocked!" on the victory screen
 
     while True:  # Main Loop
-        mouse_pos = pygame.mouse.get_pos() #Gets cursor for buttons to go back to menu/quit
+        mouse_pos = pygame.mouse.get_pos()
         for event in pygame.event.get():
             if event.type == pygame.QUIT:
                 return "quit"
             if event.type == pygame.KEYDOWN:
+                if state == "fighting":
+                    # feed action taps into the input buffer the moment they
+                    # arrive - polling alone can miss keys tapped between frames
+                    player1.buffer_key(event.key)
+                    player2.buffer_key(event.key)
                 if event.key == pygame.K_ESCAPE:
                     if state == "paused":
-                        state = prev_state       # resumes the fight
+                        state = prev_state       # resume the fight
                     elif state == "match_over":
                         return "menu"
                     else:
-                        prev_state = state       # pause everything
+                        prev_state = state       # freeze everything
                         state = "paused"
                 elif state == "match_over":
-                    return "menu"  # any key after the match ends returns to the menu screen
+                    return "menu"  # any key after the match ends
             if event.type == pygame.MOUSEBUTTONDOWN and event.button == 1:
-                if state == "paused": 
-                    if resume_btn.collidepoint(mouse_pos): 
+                if state == "paused":
+                    if resume_btn.collidepoint(mouse_pos):
                         state = prev_state
                     elif quit_btn.collidepoint(mouse_pos):
                         return "menu"
@@ -870,7 +1187,9 @@ def run_game(screen, mode="multi", level=1):
         elif state == "fighting":
             if fight_flash > 0:
                 fight_flash -= 1
-            all_sprites.update() #Updates positions visually
+            if sudden_flash > 0:
+                sudden_flash -= 1
+            all_sprites.update()
 
             # spawn any specials that were triggered this frame
             for p in (player1, player2):
@@ -889,31 +1208,64 @@ def run_game(screen, mode="multi", level=1):
             player1.facing = 1 if player2.rect.centerx >= player1.rect.centerx else -1
             player2.facing = 1 if player1.rect.centerx >= player2.rect.centerx else -1
 
-            # melee hit detection
+            # melee hit detection (in sudden death, one clean hit is the round);
+            # contacts are gathered first so simultaneous trades stay fair
+            contacts = []
             for attacker, defender in ((player1, player2), (player2, player1)):
                 hitbox = attacker.get_hitbox()
                 if hitbox and not attacker.has_hit and hitbox.colliderect(defender.rect):
-                    if apply_hit(attacker, defender, attacker.attack_damage):
-                        attacker.has_hit = True
-                    elif not attacker.evade_counted:
-                        # the swing passed through i-frames: one dodge on the stat sheet
-                        defender.stats['dodged'] += 1
-                        attacker.evade_counted = True
+                    contacts.append((attacker, defender))
+            for attacker, defender in contacts:
+                dmg = SUDDEN_DEATH_DAMAGE if sudden_death else attacker.attack_damage
+                stun = LIGHT_HITSTUN if attacker.attack_type == 'light' else HEAVY_HITSTUN
+                if apply_hit(attacker, defender, dmg, stun):
+                    attacker.has_hit = True
+                    if attacker.attack_type == 'heavy' and not defender.blocking:
+                        # a landed heavy refunds cooldown just enough to link
+                        # ONE light into the stagger: the game's only true combo
+                        attacker.attack_cooldown = min(attacker.attack_cooldown,
+                                                       HEAVY_CANCEL_COOLDOWN)
+                elif not attacker.evade_counted:
+                    # the swing passed through i-frames: one dodge on the stat sheet
+                    defender.stats['dodged'] += 1
+                    attacker.evade_counted = True
 
             # projectile hit detection
             for proj in projectiles:
                 defender = player2 if proj.owner is player1 else player1
                 if proj.rect.colliderect(defender.rect):
-                    if apply_hit(proj.owner, defender, SPECIAL_DAMAGE):
+                    dmg = SUDDEN_DEATH_DAMAGE if sudden_death else SPECIAL_DAMAGE
+                    # no parry on fireballs: stunning the owner from across the
+                    # screen would be free - a timed block still just blocks
+                    if apply_hit(proj.owner, defender, dmg, SPECIAL_HITSTUN,
+                                 can_parry=False):
                         proj.kill()  # dodged balls fly right through instead
                     elif not proj.evaded:
                         defender.stats['dodged'] += 1
                         proj.evaded = True
 
+            # a combo is over the moment the victim recovers from the stagger
+            if player2.hitstun <= 0:
+                player1.combo_hits = 0
+            if player1.hitstun <= 0:
+                player2.combo_hits = 0
+
             # --- K.O. check: did anyone run out of health this frame? ---
             p1_down = player1.health <= 0
             p2_down = player2.health <= 0
-            if p1_down or p2_down:
+            if mode == "training":
+                # no rounds in training: a downed fighter instantly respawns
+                # fresh at their starting spot, and the HUD counts dummy K.O.s
+                if p2_down:
+                    score[0] += 1
+                    player2.reset(P2_START_X)
+                if p1_down:
+                    player1.reset(P1_START_X)
+            elif p1_down or p2_down:
+                if p1_down:
+                    player1.dying = True  # play the death animation during the freeze
+                if p2_down:
+                    player2.dying = True
                 if p1_down and p2_down:
                     # both dropped on the same frame: nobody scores
                     banner, banner_sub = "DOUBLE K.O.", "No point awarded"
@@ -926,7 +1278,19 @@ def run_game(screen, mode="multi", level=1):
                 state = "ko"
                 ko_timer = KO_FREEZE
 
+            # --- round clock: when it runs out, SUDDEN DEATH begins ---
+            # (training has no clock: practice for as long as you like)
+            if state == "fighting" and not sudden_death and mode != "training":
+                round_timer -= 1
+                if round_timer <= 0:
+                    sudden_death = True  # every attack is lethal now: no stalling
+                    sudden_flash = 90
+
         elif state == "ko":
+            # fighters are frozen, but their animations keep playing so the
+            # loser's death animation runs during the freeze
+            player1.tick_animation()
+            player2.tick_animation()
             ko_timer -= 1
             if ko_timer <= 0:
                 if score[0] >= ROUNDS_TO_WIN or score[1] >= ROUNDS_TO_WIN:
@@ -946,6 +1310,9 @@ def run_game(screen, mode="multi", level=1):
                     projectiles.empty()
                     state = "countdown"
                     countdown_timer = COUNTDOWN_FRAMES
+                    round_timer = ROUND_SECONDS * 60  # fresh clock for the new round
+                    sudden_death = False
+                    sudden_flash = 0
 
         # --- drawing ---
         screen.fill((30, 30, 30))
@@ -970,7 +1337,26 @@ def run_game(screen, mode="multi", level=1):
                 radius = 6 + (SPECIAL_WINDUP - p.special_windup) * 2
                 pygame.draw.circle(screen, (80, 255, 120), (cx, cy), radius, 3)
 
-        draw_hud(screen, player1, player2, score, font, skill_font)
+        # combo counters, shown on the side of whoever is dishing it out
+        for p, cx in ((player1, 200), (player2, SCREEN_W - 200)):
+            if p.combo_hits >= 2:
+                combo_text = font.render(f"{p.combo_hits} HITS!", True, (230, 200, 50))
+                screen.blit(combo_text, combo_text.get_rect(center=(cx, 135)))
+
+        # "PARRY!" popup over whoever just deflected a hit with a timed block
+        for p in (player1, player2):
+            if p.parry_flash > 0:
+                parry_text = font.render("PARRY!", True, (255, 215, 80))
+                screen.blit(parry_text, parry_text.get_rect(
+                    center=(p.rect.centerx, p.rect.top - 30)))
+
+        if mode == "training":
+            # no clock, and the score slot shows how many times the dummy went down
+            draw_hud(screen, player1, player2, score, font, skill_font,
+                     score_label=f"KOs  {score[0]}")
+        else:
+            draw_hud(screen, player1, player2, score, font, skill_font,
+                     time_left=max(0, (round_timer + 59) // 60), sudden_death=sudden_death)
         if state == "ko":
             draw_banner(screen, big_font, font, banner, banner_sub)
         elif state == "match_over":
@@ -982,6 +1368,10 @@ def run_game(screen, mode="multi", level=1):
             number = countdown_timer // 60 + 1  # 3, 2, 1
             round_number = score[0] + score[1] + 1
             draw_banner(screen, big_font, font, str(number), f"Round {round_number}")
+        elif sudden_flash > 0:
+            # the clock just ran out: one clean hit decides the round
+            text = big_font.render("SUDDEN DEATH!", True, (255, 80, 60))
+            screen.blit(text, text.get_rect(center=(SCREEN_W // 2, 275)))
         elif fight_flash > 0:
             # quick "FIGHT!" flash right as the round starts (no dark strip:
             # the fighters are already moving underneath)
